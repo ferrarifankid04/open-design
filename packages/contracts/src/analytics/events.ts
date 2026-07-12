@@ -1994,8 +1994,8 @@ export interface NextStepActionClickProps {
   chip_id?: string;
 }
 
-// Studio Questions tab discovery form (the agent-emitted <question-form>
-// rendered in the right-hand panel before generation starts). The form body
+// Studio inline discovery form (the agent-emitted <question-form> rendered in
+// the originating assistant message before generation starts). The form body
 // is model-generated JSON, so chips are question options, not fixed UI:
 //   - `task_type_chip`: a pick on the `taskType` radio (Prototype / Live
 //     artifact / Slide deck / Image / Video / HyperFrames / Audio / Other).
@@ -2787,9 +2787,9 @@ export interface AssistantFeedbackReasonPanelSurfaceViewProps {
   rating: 'positive' | 'negative';
 }
 
-// Exposure of the Questions tab discovery form — fires once per form
-// occurrence when a parseable form first becomes visible (the tab is
-// conditionally mounted, so emit sites dedupe by the occurrence key).
+// Exposure of the inline discovery form — fires once per form occurrence when
+// a parseable form first becomes visible in the chat. Emit sites dedupe by the
+// occurrence key.
 // Denominator for the questions_form click events above.
 export interface QuestionsFormSurfaceViewProps {
   page_name: 'chat_panel';
