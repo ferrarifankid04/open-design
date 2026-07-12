@@ -28,6 +28,7 @@ import {
   type TrackingProjectKind,
 } from "@open-design/contracts/analytics";
 import {
+  formOptionLabelForValue,
   splitOnQuestionForms,
   stripTrailingOpenQuestionForm,
   type QuestionForm,
@@ -41,7 +42,8 @@ import {
   type OdCardBrandBrowserAssist,
 } from "@open-design/contracts";
 import { OdCardView, type BrandBrowserAssistConfirm } from "./OdCard";
-import { parseSubmittedAnswers } from "./QuestionForm";
+import { parseSubmittedAnswers, QuestionFormView } from "./QuestionForm";
+import type { VisualStyleContext } from "../runtime/visual-style-catalog";
 import { splitStreamingArtifact, stripArtifact, stripRecoveredHtmlFallbackForDisplay } from "../artifacts/strip";
 import { BRAND_BROWSER_TAB_ID } from "../runtime/brand-browser-bridge";
 import {
@@ -80,12 +82,6 @@ type TranslateFn = (
   key: keyof Dict,
   vars?: Record<string, string | number>
 ) => string;
-
-export type QuestionFormOpenRequest = {
-  form: QuestionForm;
-  messageId: string;
-  submittedAnswers?: Record<string, string | string[]>;
-};
 
 const DISCORD_INVITE_URL = "https://discord.gg/mHAjSMV6gz";
 
@@ -346,13 +342,10 @@ interface Props {
   // to avoid duplication. Other messages keep their error pill.
   errorCardOwnerId?: string | null;
   // The user message that immediately follows this assistant turn, if any.
-  // Kept for ChatPane compatibility; chat-side question forms now always
-  // render as a compact Questions banner.
+  // Structured form replies are parsed back into the inline answered summary.
   nextUserContent?: string;
-  // Open the right-hand Questions tab. The active discovery form renders
-  // there (Claude-Design style) instead of inline; this assistant message
-  // shows a banner that focuses the tab on click.
-  onOpenQuestions?: (request?: QuestionFormOpenRequest) => void;
+  onSubmitQuestionForm?: (text: string) => void;
+  questionFormSubmitDisabled?: boolean;
   onContinueRemainingTasks?: (todos: TodoItem[]) => void;
   onForkFromMessage?: () => void;
   forking?: boolean;
@@ -416,6 +409,7 @@ const ASSISTANT_MESSAGE_COMPARED_PROPS: Array<keyof Props> = [
   'isLast',
   'errorCardOwnerId',
   'nextUserContent',
+  'questionFormSubmitDisabled',
   'forking',
   'shareToOpenDesignBusy',
   'suppressDirectionForms',
@@ -483,7 +477,8 @@ function AssistantMessageImpl({
   isLast,
   errorCardOwnerId = null,
   nextUserContent,
-  onOpenQuestions,
+  onSubmitQuestionForm,
+  questionFormSubmitDisabled = false,
   onContinueRemainingTasks,
   onForkFromMessage,
   forking = false,
@@ -546,6 +541,19 @@ function AssistantMessageImpl({
       },
     );
   }, [displayEvents, liveCodeBlocks, showConversationTodoCard, conversationTodoInput]);
+  const hasInlineQuestionForm = useMemo(
+    () =>
+      blocks.some(
+        (block) =>
+          block.kind === "text" &&
+          splitOnQuestionForms(stripArtifact(block.text)).some(
+            (segment) =>
+              segment.kind === "form" &&
+              !(suppressDirectionForms && isDirectionForm(segment.form)),
+          ),
+      ),
+    [blocks, suppressDirectionForms],
+  );
   const fileOps = useMemo(() => deriveFileOps(displayEvents), [displayEvents]);
   const produced = message.producedFiles ?? [];
   const displayedProduced = useMemo(
@@ -748,13 +756,13 @@ function AssistantMessageImpl({
             : !!onToolboxAction ||
               !!onNextStepCreateDesignSystem ||
               (!!nextStepArtifactName && (!!onArtifactShare || !!onArtifactDownload));
-  // Terminal turns should leave the user with an actionable path, including
-  // canceled/failed/no-artifact turns. Artifact-backed cards still wire Share
-  // and Download to the chosen file; incomplete cards fall back to composer
-  // prompts or toolbox actions.
+  // Terminal turns should leave the user with an actionable path, except when
+  // the turn's action is the inline question form itself. Recommendations wait
+  // for the follow-up assistant turn so they never compete with the brief.
   const showNextStepActions =
     !streaming &&
     runTerminal &&
+    !hasInlineQuestionForm &&
     ((!!isLast && hasNextStepPrimary) || showOpenDesignSubmission);
   // Pre-output vs working: before any real content (text / thinking / tools /
   // files) the footer shimmers "Preparing…"; the moment content lands it
@@ -796,7 +804,9 @@ function AssistantMessageImpl({
                 showStreamCursor={streaming && i === lastTextBlockIndex}
                 nextUserContent={nextUserContent}
                 suppressDirectionForms={suppressDirectionForms}
-                onOpenQuestions={onOpenQuestions}
+                onSubmitQuestionForm={onSubmitQuestionForm}
+                questionFormSubmitDisabled={questionFormSubmitDisabled}
+                visualStyleContext={visualStyleContextForProjectKind(projectKind)}
                 projectId={projectId}
                 conversationId={conversationId}
                 runId={message.runId ?? null}
@@ -2327,7 +2337,9 @@ function ProseBlock({
   showStreamCursor,
   nextUserContent,
   suppressDirectionForms,
-  onOpenQuestions,
+  onSubmitQuestionForm,
+  questionFormSubmitDisabled,
+  visualStyleContext,
   projectId,
   conversationId,
   runId,
@@ -2347,7 +2359,9 @@ function ProseBlock({
   conversationId?: string | null;
   runId?: string | null;
   projectFileNames?: Set<string>;
-  onOpenQuestions?: (request?: QuestionFormOpenRequest) => void;
+  onSubmitQuestionForm?: (text: string) => void;
+  questionFormSubmitDisabled: boolean;
+  visualStyleContext?: VisualStyleContext;
   onRequestOpenFile?: (name: string) => void;
   onBrandBrowserAssistConfirm?: BrandBrowserAssistConfirm;
 }) {
@@ -2358,8 +2372,7 @@ function ProseBlock({
   }, [hideRecoveredHtmlFallback, text]);
   // While the latest turn is still streaming a not-yet-closed question-form,
   // drop the partial `<question-form>{…` markup from the prose so the chat
-  // doesn't flash raw JSON; we surface a banner for it instead. The actual
-  // form streams into the right-hand Questions tab. A not-yet-closed
+  // doesn't flash raw JSON; an inline loading frame takes its place. A not-yet-closed
   // `<od-card>{…` block is stripped the same way so its raw JSON doesn't flash
   // before the close tag arrives (the card renders inline once complete).
   const { text: visibleText, hadOpenForm } = useMemo(() => {
@@ -2467,7 +2480,10 @@ function ProseBlock({
             form={seg.form}
             assistantMessageId={assistantMessageId}
             nextUserContent={nextUserContent}
-            onOpenQuestions={onOpenQuestions}
+            interactive={isLastAssistant}
+            onSubmit={onSubmitQuestionForm}
+            submitDisabled={questionFormSubmitDisabled}
+            visualStyleContext={visualStyleContext}
           />
         );
       })}
@@ -2478,46 +2494,8 @@ function ProseBlock({
           code={live.content}
         />
       ) : null}
-      {hadOpenForm ? <QuestionsBanner onOpen={onOpenQuestions} /> : null}
+      {hadOpenForm ? <QuestionFormLoading /> : null}
     </div>
-  );
-}
-
-// Chat-side banner that points to the right-hand Questions tab where discovery
-// forms live. The chat column always stays compact: no inline form preview,
-// answered or not.
-function QuestionsBanner({
-  onOpen,
-  answered = false,
-}: {
-  onOpen?: () => void;
-  answered?: boolean;
-}) {
-  const t = useT();
-  // Once the form has been answered there is nothing left to open, so the
-  // banner becomes a non-interactive "done" marker: no chevron affordance, no
-  // click target, muted styling.
-  return (
-    <button
-      type="button"
-      className={`questions-banner${answered ? " questions-banner-answered" : ""}`}
-      data-testid="questions-banner"
-      data-answered={answered ? "true" : undefined}
-      disabled={answered}
-      onClick={answered ? undefined : () => onOpen?.()}
-    >
-      <span className="questions-banner-icon" aria-hidden>
-        <Icon name={answered ? "check" : "help-circle"} size={15} />
-      </span>
-      <span className="questions-banner-label">
-        {answered ? t("questions.bannerAnswered") : t("questions.banner")}
-      </span>
-      {answered ? null : (
-        <span className="questions-banner-cta" aria-hidden>
-          <Icon name="chevron-right" size={14} />
-        </span>
-      )}
-    </button>
   );
 }
 
@@ -2531,31 +2509,102 @@ function FormBlock({
   form,
   assistantMessageId,
   nextUserContent,
-  onOpenQuestions,
+  interactive,
+  onSubmit,
+  submitDisabled,
+  visualStyleContext,
 }: {
   form: QuestionForm;
   assistantMessageId: string;
   nextUserContent?: string;
-  onOpenQuestions?: (request?: QuestionFormOpenRequest) => void;
+  interactive: boolean;
+  onSubmit?: (text: string) => void;
+  submitDisabled: boolean;
+  visualStyleContext?: VisualStyleContext;
 }) {
-  // A "[form answers …]" reply parked right after this message means the form
-  // was already submitted; the banner then renders as an answered/done state.
+  const t = useT();
   const submittedFromHistory = useMemo(
     () => (nextUserContent ? parseSubmittedAnswers(form, nextUserContent) : null),
     [form, nextUserContent],
   );
+  const summaryItems = useMemo(() => {
+    if (!submittedFromHistory) return [];
+    return form.questions.flatMap((question) => {
+      const raw = submittedFromHistory[question.id];
+      const values = Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : [];
+      const labels = values
+        .filter((value) => value.trim().length > 0)
+        .map((value) => formOptionLabelForValue(question, value));
+      return labels.length > 0 ? [{ label: question.label, value: labels.join(", ") }] : [];
+    });
+  }, [form, submittedFromHistory]);
+
+  if (submittedFromHistory) {
+    return (
+      <div
+        className="question-form-summary"
+        data-testid="question-form-summary"
+        data-form-id={form.id}
+        data-message-id={assistantMessageId}
+      >
+        <span className="question-form-summary-icon" aria-hidden>
+          <Icon name="check" size={14} />
+        </span>
+        <div className="question-form-summary-body">
+          <div className="question-form-summary-title">{t("questions.bannerAnswered")}</div>
+          {summaryItems.length > 0 ? (
+            <div className="question-form-summary-items">
+              {summaryItems.map((item) => (
+                <span key={item.label} className="question-form-summary-item">
+                  <span>{item.label}</span>
+                  <strong>{item.value}</strong>
+                </span>
+              ))}
+            </div>
+          ) : (
+            <div className="question-form-summary-empty">{t("qf.lockedSubmitted")}</div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <QuestionsBanner
-      answered={submittedFromHistory != null}
-      onOpen={() => {
-        onOpenQuestions?.({
-          form,
-          messageId: assistantMessageId,
-          submittedAnswers: submittedFromHistory ?? undefined,
-        });
-      }}
+    <QuestionFormView
+      form={form}
+      interactive={interactive}
+      onSubmit={onSubmit ? (text) => onSubmit(text) : undefined}
+      submitDisabled={submitDisabled}
+      visualStyleContext={visualStyleContext}
     />
   );
+}
+
+function QuestionFormLoading() {
+  return (
+    <div className="question-form question-form-loading" aria-hidden data-testid="question-form-loading">
+      <div className="question-form-head">
+        <span className="question-form-icon">?</span>
+        <div className="question-form-loading-lines">
+          <span />
+          <span />
+        </div>
+      </div>
+      <div className="question-form-loading-body">
+        <span />
+        <span />
+        <span />
+      </div>
+    </div>
+  );
+}
+
+function visualStyleContextForProjectKind(
+  projectKind: TrackingProjectKind | null,
+): VisualStyleContext | undefined {
+  if (projectKind === "slide_deck") return "deck";
+  if (projectKind === "prototype" || projectKind === "mobile") return "prototype";
+  return undefined;
 }
 
 function SystemReminderBlock({
