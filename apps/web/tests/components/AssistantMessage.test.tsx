@@ -10,6 +10,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AssistantMessage } from '../../src/components/AssistantMessage';
+import * as registry from '../../src/providers/registry';
 import type { ChatMessage, ProjectFile } from '../../src/types';
 
 beforeAll(() => {
@@ -27,10 +28,13 @@ beforeAll(() => {
 afterEach(() => {
   cleanup();
   window.localStorage.clear();
+  window.sessionStorage.clear();
+  vi.restoreAllMocks();
 });
 
 beforeEach(() => {
   window.localStorage.clear();
+  window.sessionStorage.clear();
 });
 
 function baseMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
@@ -417,6 +421,132 @@ describe('AssistantMessage question forms', () => {
     );
     expect(screen.queryByText('Quick brief — 30 seconds')).toBeNull();
     expect(screen.queryByText('What are we making?')).toBeNull();
+  });
+
+  it('restores an inline form draft after remounting the conversation', () => {
+    const form = [
+      '<question-form id="discovery" title="Quick brief">',
+      JSON.stringify({
+        questions: [{ id: 'audience', label: 'Who is this for?', type: 'text' }],
+      }),
+      '</question-form>',
+    ].join('\n');
+    const message = baseMessage({
+      events: [{ kind: 'text', text: form } as ChatMessage['events'][number]],
+    });
+    const props = {
+      message,
+      streaming: false,
+      projectId: 'proj-1',
+      conversationId: 'conv-1',
+      isLast: true,
+      onSubmitQuestionForm: vi.fn(),
+    };
+    const first = render(<AssistantMessage {...props} />);
+    const input = first.container.querySelector('.qf-input') as HTMLInputElement | null;
+    if (!input) throw new Error('expected audience input');
+    fireEvent.change(input, { target: { value: 'Product evaluators' } });
+    first.unmount();
+
+    const restored = render(<AssistantMessage {...props} />);
+    expect((restored.container.querySelector('.qf-input') as HTMLInputElement).value).toBe(
+      'Product evaluators',
+    );
+  });
+
+  it('submits one answer when the send action is triggered twice', () => {
+    const form = [
+      '<question-form id="discovery" title="Quick brief">',
+      JSON.stringify({
+        questions: [{ id: 'audience', label: 'Who is this for?', type: 'text' }],
+      }),
+      '</question-form>',
+    ].join('\n');
+    const onSubmitQuestionForm = vi.fn();
+    render(
+      <AssistantMessage
+        message={baseMessage({
+          events: [{ kind: 'text', text: form } as ChatMessage['events'][number]],
+        })}
+        streaming={false}
+        projectId="proj-1"
+        conversationId="conv-1"
+        isLast
+        onSubmitQuestionForm={onSubmitQuestionForm}
+      />,
+    );
+    fireEvent.change(document.querySelector('.qf-input') as HTMLInputElement, {
+      target: { value: 'Product evaluators' },
+    });
+    const submit = screen.getByRole('button', { name: 'Send answers' });
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+    expect(onSubmitQuestionForm).toHaveBeenCalledTimes(1);
+  });
+
+  it('uploads file answers before sending their attachment context', async () => {
+    const form = [
+      '<question-form id="references" title="References">',
+      JSON.stringify({
+        questions: [
+          {
+            id: 'assets',
+            label: 'Reference assets',
+            type: 'file',
+            required: true,
+            multiple: true,
+          },
+        ],
+      }),
+      '</question-form>',
+    ].join('\n');
+    const uploaded = {
+      id: 'attachment-1',
+      name: 'mood.png',
+      path: 'uploads/mood.png',
+      mime: 'image/png',
+      size: 4,
+    };
+    const upload = vi.spyOn(registry, 'uploadProjectFiles').mockResolvedValue({
+      uploaded: [uploaded],
+      failed: [],
+    });
+    const onSubmitQuestionForm = vi.fn();
+    const { container } = render(
+      <AssistantMessage
+        message={baseMessage({
+          events: [{ kind: 'text', text: form } as ChatMessage['events'][number]],
+        })}
+        streaming={false}
+        projectId="proj-1"
+        conversationId="conv-1"
+        isLast
+        onSubmitQuestionForm={onSubmitQuestionForm}
+      />,
+    );
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement | null;
+    if (!input) throw new Error('expected file input');
+    const file = new File(['mood'], 'mood.png', { type: 'image/png' });
+    fireEvent.change(input, { target: { files: [file] } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send answers' }));
+
+    await waitFor(() => expect(upload).toHaveBeenCalledWith('proj-1', [file]));
+    await waitFor(() =>
+      expect(onSubmitQuestionForm).toHaveBeenCalledWith(
+        expect.stringContaining('Reference assets: mood.png -> uploads/mood.png'),
+        [expect.objectContaining({ name: 'mood.png', path: 'uploads/mood.png', order: 0 })],
+        {
+          workspaceItems: [
+            {
+              id: 'file:uploads/mood.png',
+              kind: 'file',
+              label: 'mood.png',
+              path: 'uploads/mood.png',
+            },
+          ],
+        },
+      ),
+    );
   });
 
   it('collapses answered questions into a readable inline summary', () => {

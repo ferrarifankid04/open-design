@@ -1,4 +1,12 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from 'react';
 import { createPortal } from 'react-dom';
 import {
   Button,
@@ -71,10 +79,17 @@ interface Props {
     text: string,
     answers: Record<string, string | string[]>,
     source: 'submit' | 'skip' | 'auto',
+    files?: QuestionFormFileSubmission[],
   ) => void;
   submitDisabled?: boolean;
   visualStyleContext?: VisualStyleContext;
   autoContinueOptional?: boolean;
+}
+
+export interface QuestionFormFileSubmission {
+  questionId: string;
+  questionLabel: string;
+  files: File[];
 }
 
 // Lets an embedding host trigger submission.
@@ -105,7 +120,7 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
 ) {
   const t = useT();
   const initial = useMemo(
-    () => buildInitialState(form, submittedAnswers ?? draftAnswers),
+    () => buildInitialState(form, submittedAnswers, draftAnswers),
     [form, submittedAnswers, draftAnswers],
   );
   const [answers, setAnswers] = useState<Record<string, string | string[]>>(initial);
@@ -115,6 +130,7 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
     OPTIONAL_FORM_AUTO_CONTINUE_SECONDS,
   );
   const autoContinuedRef = useRef(false);
+  const [fileAnswers, setFileAnswers] = useState<Record<string, File[]>>({});
   const locked = !interactive || !onSubmit || submittedAnswers !== undefined;
   const currentAnswers = submittedAnswers ?? answers;
   const stepped = !locked && !hideInternalSubmit && form.questions.length > 1;
@@ -132,6 +148,10 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
       Math.min(current, Math.max(0, form.questions.length - 1)),
     );
   }, [form.questions.length]);
+
+  useEffect(() => {
+    setFileAnswers({});
+  }, [form.id]);
 
   // When the form streams in question-by-question, backfill state for newly
   // revealed questions without disturbing answers the user already touched.
@@ -164,7 +184,7 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
       nextSkipped.delete(id);
       return nextSkipped;
     });
-    onDraftChange?.(next);
+    onDraftChange?.(draftSafeAnswers(form, next));
     onAnswerChange?.(id, value);
   }
 
@@ -182,7 +202,7 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
       nextSkipped.delete(id);
       return nextSkipped;
     });
-    onDraftChange?.(nextAnswers);
+    onDraftChange?.(draftSafeAnswers(form, nextAnswers));
     onAnswerChange?.(id, next);
   }
 
@@ -197,7 +217,12 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
     if (locked || !onSubmit) return;
     // Block submit until required fields are answered and selection caps hold.
     if (!ready) return;
-    onSubmit(formatFormAnswers(form, answers), answers, 'submit');
+    const files = collectFileSubmissions(form, fileAnswers);
+    if (files.length > 0) {
+      onSubmit(formatFormAnswers(form, answers), answers, 'submit', files);
+    } else {
+      onSubmit(formatFormAnswers(form, answers), answers, 'submit');
+    }
   }
 
   function handleSkipAll() {
@@ -300,8 +325,13 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
       return;
     }
     autoContinuedRef.current = true;
-    onSubmit(formatFormAnswers(form, answers), answers, 'auto');
-  }, [answers, autoContinueEnabled, autoContinueRemaining, form, onSubmit]);
+    const files = collectFileSubmissions(form, fileAnswers);
+    if (files.length > 0) {
+      onSubmit(formatFormAnswers(form, answers), answers, 'auto', files);
+    } else {
+      onSubmit(formatFormAnswers(form, answers), answers, 'auto');
+    }
+  }, [answers, autoContinueEnabled, autoContinueRemaining, fileAnswers, form, onSubmit]);
 
   return (
     <div className={`question-form${locked ? ' question-form-locked' : ''}`} data-form-id={form.id}>
@@ -534,9 +564,12 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
                     type="file"
                     className="qf-file"
                     multiple={q.multiple}
+                    accept={q.accept}
                     disabled={locked}
                     onChange={(e) => {
-                      const names = Array.from(e.target.files ?? []).map((file) => file.name);
+                      const files = Array.from(e.target.files ?? []);
+                      const names = files.map((file) => file.name);
+                      setFileAnswers((current) => ({ ...current, [q.id]: files }));
                       update(q.id, q.multiple ? names : names[0] ?? '');
                     }}
                   />
@@ -718,6 +751,7 @@ function CustomChoiceInput({
   disabled: boolean;
   onChange: (value: string) => void;
 }) {
+  const chars = customInputCharCount(value, placeholder);
   return (
     <label className="qf-custom">
       <span>{label}</span>
@@ -727,6 +761,7 @@ function CustomChoiceInput({
         value={value}
         placeholder={placeholder}
         disabled={disabled}
+        style={{ '--qf-custom-chars': String(chars) } as CSSProperties}
         onChange={(event) => onChange(event.target.value)}
       />
     </label>
@@ -1162,6 +1197,7 @@ function DirectionCardView({
 function buildInitialState(
   form: QuestionForm,
   submitted: Record<string, string | string[]> | undefined,
+  draft: Record<string, string | string[]> | undefined,
 ): Record<string, string | string[]> {
   const out: Record<string, string | string[]> = {};
   for (const q of form.questions) {
@@ -1169,11 +1205,44 @@ function buildInitialState(
       out[q.id] = canonicalizeQuestionValue(q, submitted[q.id]!);
       continue;
     }
+    if (draft && draft[q.id] !== undefined && q.type !== 'file') {
+      out[q.id] = canonicalizeQuestionValue(q, draft[q.id]!);
+      continue;
+    }
     if (q.defaultValue !== undefined) {
       out[q.id] = canonicalizeQuestionValue(q, q.defaultValue);
       continue;
     }
     out[q.id] = emptyQuestionValue(q);
+  }
+  return out;
+}
+
+function draftSafeAnswers(
+  form: QuestionForm,
+  answers: Record<string, string | string[]>,
+): Record<string, string | string[]> {
+  const fileQuestionIds = new Set(
+    form.questions.filter((q) => q.type === 'file').map((q) => q.id),
+  );
+  if (fileQuestionIds.size === 0) return answers;
+  const out: Record<string, string | string[]> = {};
+  for (const [id, value] of Object.entries(answers)) {
+    if (!fileQuestionIds.has(id)) out[id] = value;
+  }
+  return out;
+}
+
+function collectFileSubmissions(
+  form: QuestionForm,
+  fileAnswers: Record<string, File[]>,
+): QuestionFormFileSubmission[] {
+  const out: QuestionFormFileSubmission[] = [];
+  for (const q of form.questions) {
+    if (q.type !== 'file') continue;
+    const files = fileAnswers[q.id] ?? [];
+    if (files.length === 0) continue;
+    out.push({ questionId: q.id, questionLabel: q.label, files });
   }
   return out;
 }
@@ -1232,6 +1301,11 @@ function splitCustomEntries(raw: string): string[] {
     .split(/[\n,]/)
     .map((entry) => entry.trim())
     .filter(Boolean);
+}
+
+function customInputCharCount(value: string, placeholder: string): number {
+  const base = value.length > 0 ? value.length : Math.min(placeholder.length, 22);
+  return Math.max(18, Math.min(base + 2, 72));
 }
 
 function normalizeColorInputValue(value: string | string[] | undefined): string {
