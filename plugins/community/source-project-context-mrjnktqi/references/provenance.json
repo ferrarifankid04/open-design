@@ -1,0 +1,26 @@
+{
+  "candidateId": "a2b01c51-2233-4066-b8c1-c2045a4ac4d0",
+  "projectId": "b1be5352-086b-4919-b94c-7ab58c01fe98",
+  "runId": "0cea1ce2-80aa-4827-b802-b8e8cd8bf036",
+  "conversationId": "d2b93956-1b11-4ed0-862f-4740afb832e7",
+  "provenance": {
+    "summary": "Detected from context/source-context.md, DESIGN.md after a successful run.",
+    "detectedAt": 1783972901540
+  },
+  "sourceRefs": [
+    {
+      "kind": "file",
+      "value": "context/source-context.md",
+      "label": "context/source-context.md",
+      "size": 2171,
+      "copied": true
+    },
+    {
+      "kind": "file",
+      "value": "DESIGN.md",
+      "label": "DESIGN.md",
+      "size": 1530,
+      "copied": true
+    }
+  ]
+}
