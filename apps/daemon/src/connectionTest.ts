@@ -2182,6 +2182,53 @@ async function testAgentConnectionInternal(
         diagnostics: buildDiagnostics({ phase: 'output_parse' }),
       };
     }
+    // Stream errors are structured frames the agent emitted mid-run (the
+    // process spawned fine), so classify before collapsing to
+    // `agent_spawn_failed`. Without this, OpenCode relaying a provider 401
+    // (`{"type":"authentication_error","message":"invalid x-api-key"}`)
+    // rendered as "Could not start OpenCode: invalid x-api-key." — pointing
+    // users at the binary when the actual fix is their provider credential.
+    // Agents with tailored guidance were already handled by
+    // classifyAgentAuthFailure above; this agent-agnostic fallback catches
+    // the rest (auth / quota / upstream), mirroring the chat-run
+    // classification in server.ts.
+    const serviceFailure = classifyAgentServiceFailure(detail);
+    if (serviceFailure === 'AGENT_AUTH_REQUIRED') {
+      console.warn(`[test:agent] ${def.name} → auth_required: ${detail}`);
+      return {
+        ok: false,
+        kind: 'agent_auth_required',
+        latencyMs,
+        model,
+        agentName: def.name,
+        detail: `${def.name} reported an authentication error: ${detail}. Re-authenticate the CLI (or fix the provider API key it uses), then retry.`,
+        diagnostics: buildDiagnostics({ phase: 'connection_smoke_test' }),
+      };
+    }
+    if (serviceFailure === 'RATE_LIMITED') {
+      console.warn(`[test:agent] ${def.name} → rate_limited: ${detail}`);
+      return {
+        ok: false,
+        kind: 'rate_limited',
+        latencyMs,
+        model,
+        agentName: def.name,
+        detail,
+        diagnostics: buildDiagnostics({ phase: 'connection_smoke_test' }),
+      };
+    }
+    if (serviceFailure === 'UPSTREAM_UNAVAILABLE') {
+      console.warn(`[test:agent] ${def.name} → upstream_unavailable: ${detail}`);
+      return {
+        ok: false,
+        kind: 'upstream_unavailable',
+        latencyMs,
+        model,
+        agentName: def.name,
+        detail,
+        diagnostics: buildDiagnostics({ phase: 'connection_smoke_test' }),
+      };
+    }
     console.warn(
       `[test:agent] ${def.name} → stream_error: ${detail}`,
     );

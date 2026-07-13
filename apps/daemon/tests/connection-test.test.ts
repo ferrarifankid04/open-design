@@ -3531,6 +3531,47 @@ process.exit(1);
     );
   });
 
+  // Regression for "Could not start OpenCode: invalid x-api-key." — OpenCode
+  // relays provider 401s as structured stdout error frames and exits 0. The
+  // stream-error path must classify these as agent_auth_required with
+  // credential guidance instead of the misleading agent_spawn_failed.
+  it('classifies OpenCode provider 401 error frames as agent_auth_required', async () => {
+    await withFakeOpenCode(
+      `
+const args = process.argv.slice(2);
+if (args[0] === 'models') {
+  console.log('anthropic/claude-sonnet-4-5');
+  process.exit(0);
+}
+process.stdin.resume();
+process.stdin.on('data', () => {});
+process.stdin.on('end', () => {
+  console.log(JSON.stringify({
+    type: 'error',
+    error: { name: 'ProviderAuthError', message: 'invalid x-api-key' },
+  }));
+  process.exit(0);
+});
+`,
+      async () => {
+        const res = await realFetch(`${baseUrl}/api/test/connection`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ mode: 'agent', agentId: 'opencode' }),
+        });
+        expect(res.status).toBe(200);
+        const body = await res.json() as { detail?: string };
+        expect(body).toMatchObject({
+          ok: false,
+          kind: 'agent_auth_required',
+          agentName: 'OpenCode',
+        });
+        expect(body.detail).toContain('opencode auth login');
+        expect(body.detail).toContain('auth.json');
+      },
+    );
+  });
+
   it('preserves unrelated OpenCode missing-required failures', async () => {
     await withFakeOpenCode(
       `

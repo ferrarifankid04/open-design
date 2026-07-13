@@ -1526,3 +1526,55 @@ test('spawnEnvForAgent preserves a configured MIMOCODE_DISABLE_PROJECT_CONFIG ov
   assert.equal(env.MIMOCODE_DISABLE_PROJECT_CONFIG, '0');
   assert.equal(env.PATH, '/usr/bin');
 });
+
+// Regression for "Could not start OpenCode: invalid x-api-key." — OpenCode
+// relays provider 401s as structured stdout error frames while exiting 0,
+// so the connection test's stream-error path must classify them as
+// AGENT_AUTH_REQUIRED with actionable guidance instead of collapsing to
+// agent_spawn_failed (which the Settings UI renders as a spawn failure).
+test('opencode auth matcher covers provider 401 error-frame shapes', async () => {
+  const { isOpenCodeAuthFailureText, opencodeAuthGuidance, classifyAgentAuthFailure } =
+    await import('../../src/runtimes/auth.js');
+
+  // Anthropic's canonical 401 body relayed verbatim by OpenCode.
+  assert.equal(isOpenCodeAuthFailureText('invalid x-api-key'), true);
+  assert.equal(
+    isOpenCodeAuthFailureText(
+      '401 {"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}',
+    ),
+    true,
+  );
+  // OpenAI-style phrasing via the AI SDK.
+  assert.equal(
+    isOpenCodeAuthFailureText('Incorrect API key provided: sk-***'),
+    true,
+  );
+  assert.equal(isOpenCodeAuthFailureText('API key is missing'), true);
+  assert.equal(isOpenCodeAuthFailureText('401 Unauthorized'), true);
+
+  // Unrelated errors must NOT be claimed as auth failures.
+  assert.equal(isOpenCodeAuthFailureText('rate limit exceeded'), false);
+  assert.equal(isOpenCodeAuthFailureText('model not found: foo/bar'), false);
+  assert.equal(isOpenCodeAuthFailureText(''), false);
+
+  const cls = classifyAgentAuthFailure('opencode', 'invalid x-api-key');
+  assert.ok(cls);
+  assert.equal(cls.status, 'missing');
+  assert.equal(cls.message, opencodeAuthGuidance());
+  assert.ok(
+    opencodeAuthGuidance().includes('opencode auth login'),
+    'guidance must tell the user exactly how to re-authenticate OpenCode',
+  );
+  assert.ok(
+    opencodeAuthGuidance().includes('auth.json'),
+    'guidance must mention the credential store so a stale stored key is discoverable',
+  );
+
+  // byok-opencode shares the OpenCode toolchain and error shapes.
+  const byokCls = classifyAgentAuthFailure('byok-opencode', 'invalid x-api-key');
+  assert.ok(byokCls);
+  assert.equal(byokCls.status, 'missing');
+
+  // Non-matching text → null (don't claim auth failure on unrelated errors)
+  assert.equal(classifyAgentAuthFailure('opencode', 'network timeout'), null);
+});

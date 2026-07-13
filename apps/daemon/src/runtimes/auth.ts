@@ -56,6 +56,21 @@ const REASONIX_AUTH_GUIDANCE =
 const CLAUDE_AUTH_GUIDANCE =
   'Claude Code is installed but is not authenticated. Run `claude auth login` or open `claude` and complete login in a terminal, then rescan. If Open Design was launched outside an interactive shell, your shell rc files (e.g. ~/.zshrc) may not be loaded into its environment.';
 
+// OpenCode surfaces provider auth failures as structured stdout error
+// frames (e.g. Anthropic's 401 `{"type":"authentication_error",
+// "message":"invalid x-api-key"}`) while still exiting 0. Those frames
+// used to fall through resultFromStreamError's generic path and render
+// as "Could not start OpenCode: invalid x-api-key." — a misleading spawn
+// failure for what is really a provider-credential problem. OpenCode
+// resolves credentials from its own store (`opencode auth login` /
+// `/connect` → `~/.local/share/opencode/auth.json`) and from provider
+// env vars (e.g. ANTHROPIC_API_KEY) in the env OpenCode was spawned
+// with — which, under Open Design, is the daemon's env, not the user's
+// interactive shell. The guidance covers both sources plus the
+// GUI-launch env caveat that bites every CLI adapter.
+const OPENCODE_AUTH_GUIDANCE =
+  'OpenCode is installed but its provider credentials were rejected (e.g. "invalid x-api-key" from Anthropic). Fix the credential OpenCode is actually using: run `opencode auth login` (or `/connect` inside the OpenCode TUI) to store a valid key in ~/.local/share/opencode/auth.json, or verify the provider env var (e.g. ANTHROPIC_API_KEY) visible to the Open Design daemon process. Note that a stale or truncated key in auth.json takes effect even when a valid env var exists in your shell, and if Open Design was launched from Finder/desktop your shell rc files (e.g. ~/.zshrc) are not loaded into its environment. Verify with `opencode run "say ok"` in a terminal, then retry the test.';
+
 export function cursorAuthGuidance(): string {
   return CURSOR_AUTH_GUIDANCE;
 }
@@ -78,6 +93,10 @@ export function reasonixAuthGuidance(): string {
 
 export function claudeAuthGuidance(): string {
   return CLAUDE_AUTH_GUIDANCE;
+}
+
+export function opencodeAuthGuidance(): string {
+  return OPENCODE_AUTH_GUIDANCE;
 }
 
 export function isCursorAuthFailureText(text: string): boolean {
@@ -161,10 +180,37 @@ export function isClaudeAuthFailureText(text: string): boolean {
   );
 }
 
+// Provider-credential failures relayed through OpenCode's structured
+// error frames. Matches the Anthropic 401 shapes (`invalid x-api-key`,
+// `authentication_error`) plus the generic invalid/incorrect API key
+// phrasings other providers return through the AI SDK. Deliberately
+// narrower than AGENT_AUTH_FAILURE_RE — this runs against short,
+// single-message error frames, not multi-line stderr dumps, so plain
+// word-boundary checks are safe here.
+export function isOpenCodeAuthFailureText(text: string): boolean {
+  const value = String(text || '');
+  if (!value.trim()) return false;
+  return (
+    /invalid[ _-]?x[ _-]?api[ _-]?key/i.test(value) ||
+    /authentication[_ -]?error/i.test(value) ||
+    /\b(invalid|incorrect|missing)\b.{0,20}\bapi[ _-]?key\b/i.test(value) ||
+    /\bapi[ _-]?key\b.{0,20}\b(invalid|incorrect|missing|not set|required)\b/i.test(value) ||
+    /\b401\b.{0,40}\bunauthor(?:ized|ised)\b/i.test(value) ||
+    /\bunauthor(?:ized|ised)\b/i.test(value)
+  );
+}
+
 export function classifyAgentAuthFailure(
   agentId: string,
   text: string,
 ): AgentAuthProbeResult | null {
+  if (agentId === 'opencode' || agentId === 'byok-opencode') {
+    if (!isOpenCodeAuthFailureText(text)) return null;
+    return {
+      status: 'missing',
+      message: opencodeAuthGuidance(),
+    };
+  }
   if (agentId === 'claude') {
     if (!isClaudeAuthFailureText(text)) return null;
     return {
