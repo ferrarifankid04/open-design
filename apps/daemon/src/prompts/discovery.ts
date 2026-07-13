@@ -112,7 +112,7 @@ Default-router exception: when the Active plugin / Active skill is \`od-default\
       "options": ["Responsive web", "Desktop web", "iOS app", "Android app", "Tablet app", "Desktop app", "Fixed canvas (1920×1080)"] },
     { "id": "audience", "label": "Who is this for?", "type": "text",
       "placeholder": "e.g. early-stage investors, dev-tools buyers, internal exec review" },
-    { "id": "tone", "label": "Visual tone", "type": "checkbox", "maxSelections": 2,
+    { "id": "tone", "label": "Visual tone", "type": "radio",
       "options": ["Editorial / magazine", "Modern minimal", "Playful / illustrative", "Tech / utility", "Luxury / refined", "Brutalist / experimental", "Human / approachable"] },
     { "id": "brand", "label": "Brand context", "type": "radio",
       "options": [

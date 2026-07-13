@@ -2001,6 +2001,9 @@ export interface NextStepActionClickProps {
 //     artifact / Slide deck / Image / Video / HyperFrames / Audio / Other).
 //   - `brand_bg_chip`: a pick on the `brand` radio (pick_direction /
 //     brand_spec / reference_match).
+//   - `visual_style_*`: style selection, refresh, gallery open, and category
+//     filtering for Deck / Prototype visual direction questions.
+//   - `step_*`: explicit navigation through a multi-question brief.
 //   - `skip`: the Skip button or the auto-continue countdown elapsing
 //     (`skip_source` says which). The countdown honours any picks the user
 //     made, so skip also carries the counts.
@@ -2010,7 +2013,18 @@ export interface NextStepActionClickProps {
 export interface QuestionsFormClickProps {
   page_name: 'chat_panel';
   area: 'questions_form';
-  element: 'task_type_chip' | 'brand_bg_chip' | 'skip' | 'submit';
+  element:
+    | 'task_type_chip'
+    | 'brand_bg_chip'
+    | 'visual_style_card'
+    | 'visual_style_refresh'
+    | 'visual_style_gallery_open'
+    | 'visual_style_category_tab'
+    | 'step_back'
+    | 'step_next'
+    | 'step_skip'
+    | 'skip'
+    | 'submit';
   // task_type_chip / brand_bg_chip only: the picked option value, snake_case.
   chip_id?: string;
   // skip only: user pressed the button vs the countdown elapsed.
@@ -2020,6 +2034,16 @@ export interface QuestionsFormClickProps {
   skipped_count?: number;
   // 'task_type' (single-shot default-router brief) | 'discovery' | other.
   form_id?: string;
+  // Question-level discovery controls and step navigation.
+  question_id?: string;
+  // Visual style picker dimensions.
+  style_id?: string;
+  style_context?: 'deck' | 'prototype';
+  interaction_source?: 'inline' | 'gallery';
+  category_id?: 'all' | 'business' | 'editorial' | 'creative' | 'minimal';
+  // One-based step position and total question count.
+  step_index?: number;
+  step_count?: number;
   project_id: string;
 }
 
